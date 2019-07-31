@@ -1,0 +1,722 @@
+---
+title: "Wreck Rock cage experiment analysis"
+author: "Tomo Eguchi"
+date: \today{} 
+fontsize: 12pt
+linestretch: 2
+output: word_document
+header-includes:
+  - \usepackage{lineno}
+  - \linenumbers
+  - \setlength\parindent{24pt}
+---
+
+```{r global_options, include=FALSE}
+#pdf_document
+#'`r Sys.Date()`'
+knitr::opts_chunk$set(fig.path='figures/', echo = FALSE, message = FALSE)
+```
+This is a report on statistical analyses of cage vs control treatments of loggerhead turtle nests at Wreck Rock, Queensland, Australia. 
+
+#Effectiveness of the cage treatment 
+
+```{r getFile, include=FALSE,cache=FALSE}
+rm(list=ls())
+sysInfo <- Sys.info()
+ifelse(sysInfo[1] == 'Linux',
+       invisible(source('~/Documents/R/tools/TomosFunctions.R')),
+       invisible(source('~/R/tools/TomosFunctions.R')))
+
+#gD00 <- dirSelector()
+
+invlogit <- function(x){
+  return(exp(x)/(1 + exp(x)))
+}
+
+logit <- function(x){
+  return(log(x/(1-x)))
+}
+
+library(ggplot2)
+library(rjags)
+library(knitr)
+library(gamm4)
+# functions from http://rmflight.github.io/posts/2012/10/papersinRmd.html
+incCount <- function(inObj, useName) {
+    nObj <- length(inObj)
+    useNum <- max(inObj) + 1
+    inObj <- c(inObj, useNum)
+    names(inObj)[nObj + 1] <- useName
+    inObj
+}
+figCount <- c(`_` = 0)
+tableCount <- c(`_` = 0)
+
+pasteLabel <- function(preText, 
+                       inObj, 
+                       objName, 
+                       postText = "", 
+                       insLink = TRUE) {
+    objNum <- inObj[objName]
+    useText <- paste(preText, objNum, ". ", postText, sep = "")
+    if (insLink) {
+        useText <- paste(useText, sep = "")
+    }
+    useText
+}
+## ###################
+
+# finds figure/table number
+labelNumber <- function(inObj, objName){
+  objNum <- inObj[objName]
+  return(objNum)
+}
+
+save.fig <- F
+
+## set MCMC parameters
+n.adapt <- 10000
+n.update <- 20000
+n.iter <- 20000
+n.chains <- 5
+n.thin <- 1
+
+# input file 1
+#infile1 <- 'predation_v13Aug2014.csv'
+infile1 <- 'predation_v28Apr2017.csv'
+data1 <- read.csv(paste('data/',
+                        infile1, sep = ""), 
+                  header = TRUE)
+
+```
+
+```{r add_vars, message=FALSE,echo=F}
+# run a logistic regression on predation:
+data1$fPred <- factor(data1$Predated)
+# factor to char then split by /
+tmp1 <- strsplit(as.character(data1$Date_Laid), split = "/") 
+tmp2 <- do.call("rbind", tmp1) # to char array
+data1$date <- as.numeric(tmp2[,2])
+data1$month <- as.numeric(tmp2[,1])
+data1$year <- as.numeric(tmp2[,3])
+data1$DOY <- as.numeric(strftime(strptime(data1$Date_Laid, 
+                                          "%m/%d/%Y"), 
+                                 format = "%j"))
+firstDate <- min(data1$DOY[data1$year == 2013], na.rm = T)
+stormDate <- as.numeric(strftime(strptime("1/27/2014", 
+                                          format = "%m/%d/%Y"),
+                                 format = "%j")) + (365 - firstDate + 1)
+                        
+data1$Days[data1$year == 2013] <- data1$DOY[data1$year == 2013] - 
+  firstDate + 1   # first laid date is 1
+data1$Days[data1$year == 2014] <- data1$DOY[data1$year == 2014] + (365 - firstDate + 1)
+
+data1$storm <- rep(0, times = dim(data1)[1])
+data1$storm[data1$Days >= stormDate] <- 1
+
+data1$Peg1 <- as.numeric(do.call("rbind", 
+                                 strsplit(as.character(data1$Peg), 
+                                          split = "-"))[,1])
+data1$Peg2 <- as.numeric(do.call("rbind", 
+                                 strsplit(as.character(data1$Peg), 
+                                          split = "-"))[,2])
+
+data1$Location <- data1$Peg1
+```
+
+```{r propPredations}
+tmp <- data1[data1$Device == "C", "Predated"]
+ctrlData <- data.frame(variable = c("P", "NP"),
+                       value = c(length(tmp[tmp == 1]), 
+                                 length(tmp[tmp == 0])))
+ctrlData$prop <- ctrlData$value/sum(ctrlData$value)
+
+# order of pies is alphabetical in the variable names; NP then P
+pie1 <- ggplot(data = ctrlData, 
+               aes(x = "", y = prop, fill = variable)) + 
+  geom_histogram(width = 1, stat = "identity") + 
+  coord_polar(theta = "y") + 
+  geom_text(aes(y = prop/2 + c(0, cumsum(prop)[-length(prop)]), 
+            label = as.character(signif(prop, digits = 2))), size=8) +
+  scale_fill_manual(values = c("royalblue4", "skyblue"),
+                    name = "Control",
+                    labels = c("Unpredated", "Predated")) +
+  theme(panel.grid.major = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top")
+
+#figCount <- incCount(figCount, "plotPredCtrl")
+#predCtrlText <-"The proportions of predated and unpredated nests without exclusion devices (n = 22)."
+
+tmp <- data1[data1$Device == "D", c("Predated", "storm")]
+trmtData <- data.frame(variable = c("P", "NP"),
+                       value = c(length(tmp[tmp == 1]), length(tmp[tmp == 0])))
+trmtData$prop <- trmtData$value/(sum(trmtData$value))
+
+pie2 <- ggplot(data = trmtData, aes(x = "", y = prop, fill = variable)) + 
+  geom_histogram(width = 1, stat = "identity") + 
+  coord_polar(theta ="y") +
+  geom_text(aes(y = prop/2 + c(0, cumsum(prop)[-length(prop)]), 
+            label = as.character(signif(prop, digits = 2))), size=8) +
+  scale_fill_manual(values = c("royalblue4", "skyblue"),
+                    name = "Treatment",
+                    labels = c("Unpredated", "Predated")) +
+  theme(panel.grid.major = element_blank(), 
+        axis.ticks = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        legend.position = "top")
+
+figCount <- incCount(figCount, "plotCtrlVsTrmt")
+ctrlVsTrmtText <-"The proportions of predated and unpredated nests without (left, n = 22) and with exclusion devices (n = 31)."
+
+```
+
+The effectiveness of the exclusion cages was determined through a controled experiment. The proportions of nests that were predated were compared between treatment and control nests, where no exclusion devices were installed on the treatment nests but all other steps, e.g., digging and covering, were taken. Overall, smaller proportion of nests were predated when exclusion devices were installed (87% vs 64%; Figure `r labelNumber(figCount, "plotCtrlVsTrmt")`). 
+
+```{r plotCtrlVsTrmt}
+multiplot(pie1, pie2, cols = 2) #print(pie1)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotCtrlVsTrmt", postText = ctrlVsTrmtText)`
+
+```{r plotPredationExp,message=FALSE,echo=FALSE}
+# plot predation vs non-predation:
+# Control and non-predated
+p1 <- ggplot(data = data1, 
+             aes(x = Days, y = Location)) + 
+  geom_point(size = 4, 
+             aes(colour = fPred, shape = Device)) + 
+  scale_colour_manual(name = c("Predation"),
+                      breaks = c("0", "1"),
+                      labels = c("non-predation", "predation"),
+                      values = c("royalblue4", "skyblue")) +
+  theme(legend.position = c(0.7, 0.8)) + 
+  scale_shape_discrete(name = c("Device"),
+                       breaks = c("C", "D"),
+                       labels = c("Control", "Device")) +
+  #geom_vline(xintercept = stormDate) + 
+                       
+  xlab("Days since start of experiment") + 
+  ylab("Peg #") + 
+  theme(axis.text = element_text(size = 12))
+figCount <- incCount(figCount, "PlotPredVsNonPred")
+predVsNonPredText <-"Temporal and spatial distribution of predated and unpredated nests during the experiment."
+
+```
+
+Because of the logistical reasons, treatment and control plots were not distributed randomly throughout the nesting beach and season (Figure `r labelNumber(figCount, "PlotPredVsNonPred")`), we determined the effects of device, timing, and locations on predations. Locations of nests were measured by "peg" numbers, which correponded to the distance along the beach. The timing was determined via the number of days since the first day of sampling. The response variable was whether or not each experimental nest was predated (0/1). Logistic regression was used to model the data. 
+
+
+```{r plotPredVsNonPred}
+print(p1)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotPredVsNonPred", postText = predVsNonPredText)`
+
+To determine effects of cage treatments on predations on loggerhead turtle nests, five models were considered using days since the begnning of the experiment, locatoin (pegs), and exclusion cage treatment. ; one without the interaction between the location (Location) and device (fit.1), whereas the other with the interaction (fit.2). The model definitions and summaries of the model fit are provided in the following. 
+
+```{r glm1}
+data2 <- data1[, c("Location", "Days")]
+data2$Treatment <- rep(0, times = dim(data2)[1])
+data2$Treatment[data1$Device == "D"] <- 1
+data2_tmp <- scale(data2)
+data3 <- as.data.frame(scale(data2))
+data3$fPred <- data1$fPred
+
+fits <- vector(mode = "list", length = 5)
+fits[[1]] <- glm (fPred ~ Treatment + Location + Days, 
+              family=binomial(link="logit"),
+              data = data3)
+#summary(fit.1)
+```
+
+```{r glm2}
+
+fits[[2]] <- glm (fPred ~ Treatment + Location, 
+              family=binomial(link="logit"),
+              data = data3)
+#summary(fit.2)
+```
+
+```{r glm3}
+
+fits[[3]] <- glm (fPred ~ Treatment, 
+              family=binomial(link="logit"),
+              data = data3)
+#summary(fit.3)
+```
+
+```{r glm4}
+fits[[4]] <- glm (fPred ~ Treatment*Location, 
+              family=binomial(link="logit"),
+              data = data3)
+#summary(fit.3)
+```
+
+```{r glm5}
+fits[[5]] <- glm (fPred ~ Treatment*Days, 
+              family=binomial(link="logit"),
+              data = data3)
+#summary(fit.3)
+```
+
+```{r gam4}
+gamFit_2 <- gamm4(fPred ~ s(Location,bs="cr",k=5),
+                     data = data3, 
+                     family = binomial(link = "logit"))
+```
+
+The two models were compared using AIC:
+
+```{r AIC}
+AICs <- unlist(lapply(fits, FUN = AIC))
+AICs_df <- data.frame(AIC = AICs)
+rownames(AICs_df) <- c("Model 1", "Model 2", "Model 3", "Model 4", "Model 5")
+AICs_df$delta <- AICs_df$AIC - min(AICs_df$AIC)
+
+AICs_df$Variables <- lapply(fits, FUN = function(x) strsplit(as.character(x$formula), split = '~')[3])
+AICs.ordered <- AICs_df[order(AICs_df$delta),]
+
+best.model <- rownames(AICs.ordered)[1]
+
+tableCount <- incCount(tableCount, "AICtable")
+tableText_AICtable <- "AIC values and variables for the five models"
+
+```
+
+\noindent `r pasteLabel(preText = "Table ", inObj = tableCount, objName = "AICtable", postText = tableText_AICtable)`
+`r kable(x = AICs.ordered, digits = 2)`
+
+`r best.model` had the smallest AIC value, although all the differences in AIC values among the models were less than 5 (Table `r labelNumber(tableCount, "AICtable")`). In the following analyses, we use the best model. 
+
+```{r plotProbPredLogistic}
+bestModel <- fits[[as.numeric(strsplit(best.model, ' ')[[1]][2])]]   # change this as necessary
+coefs <- coef(summary(bestModel))
+estims <- bestModel$coefficients
+
+estim_df <- data.frame(Estimate = estims, SE = coefs[,2], p = coefs[,4])
+rownames(estim_df) <- rownames(coefs)
+tableCount <- incCount(tableCount, "estimatesTable")
+tableText_estimatesTable <- paste("Estimated coefficients of the best model (", 
+                                  best.model, 
+                                  ") and their SEs.")
+
+allPegs <- seq(from = 0, to = 200, by = 1)
+meanPegs <- attributes(data2_tmp)$'scaled:center'["Location"]
+sdPegs <- attributes(data2_tmp)$'scaled:scale'["Location"]
+allPegsZ <- (allPegs - meanPegs)/sdPegs
+
+# intercept, treatment (0 = ctrl), location, treatmentxlocation
+ctrl_df <- data.frame(cbind(0, allPegsZ))
+colnames(ctrl_df) <- c("Treatment", "Location")
+predicted_ctrl <- predict(bestModel, newdata = ctrl_df, se.fit = TRUE)
+predicted_ctrl_gam <- predict(gamFit_2$gam, newdata = ctrl_df, se.fit = TRUE)
+
+trmt_df <- data.frame(cbind(1, allPegsZ))
+colnames(trmt_df) <- c("Treatment", "Location")
+predicted_trmt <- predict(bestModel, newdata = trmt_df, se.fit = TRUE)
+#predicted_trmt_gam <- predict(gamFit_2$gam, newdata = trmt_df, se.fit = TRUE)
+
+df_cage_ctrl <- rbind(data.frame(pegs = allPegs,
+                                 fit = predicted_ctrl$fit,
+                                 se = predicted_ctrl$se.fit,
+                                 trmt = "ctrl"),
+                      data.frame(pegs = allPegs,
+                                 fit = predicted_trmt$fit,
+                                 se = predicted_trmt$se.fit,
+                                 trmt = "trmt"))
+
+df_cage_ctrl_gam <- data.frame(pegs = allPegs,
+                               ctrl = predicted_ctrl_gam$fit,
+                               se_ctrl = predicted_ctrl_gam$se.fit)
+
+ctrl_color <- "gray10"
+trmt_color <- "gray40"
+
+p_cage_ctrl <- ggplot(data = df_cage_ctrl) + 
+  geom_ribbon(aes(x = pegs, 
+                  ymin = invlogit(fit-1.96*se), 
+                  ymax = invlogit(fit+1.96*se),
+                  fill = trmt),              
+                  alpha = 0.4) + 
+  geom_line(aes(x = pegs, y = invlogit(fit), 
+                linetype = trmt), 
+            colour = "black",
+            size = 1) + 
+  scale_color_discrete() +
+  scale_fill_manual(name = "",                     
+                    values = c(ctrl = ctrl_color, 
+                               trmt = trmt_color),
+                    labels = c(ctrl = "Control", 
+                               trmt = "Treatment")) +
+  scale_linetype_manual(name = "",
+                        values = c(ctrl = 1,
+                                   trmt = 2),
+                    labels = c(ctrl = "Control", 
+                                  trmt = "Treatment")) +
+  scale_x_continuous(expand = expand_scale(add=c(0, 3))) + 
+  scale_y_continuous(expand = c(0,0)) +
+  xlab("Location (peg number)") + 
+  ylab("Probability of predation") +
+  theme(axis.text = element_text(size = 12),
+        text = element_text(size = 12),
+        legend.position = c(0.2, 0.8),
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "white", color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        legend.key.width = unit(1, "in")) 
+
+#p_cage_ctrl
+  #scale_fill_discrete(labels = c("Control", "Cage"))
+
+  # ggsave(filename = paste0("figures/plot_prob_pred_", Sys.Date(), ".tif"),
+  #        plot = p_cage_ctrl,
+  #        device = "tiff",
+  #        dpi = 600)
+
+
+if (save.fig)
+  ggsave(filename = paste0("figures/plot_prob_pred_", Sys.Date(), ".png"),
+         plot = p_cage_ctrl,
+         device = "png",
+         dpi = 600)
+
+# p_cage_ctrl_gam <- ggplot(data = df_cage_ctrl_gam) + 
+#   geom_ribbon(aes(x = pegs, 
+#                   ymin = invlogit(ctrl-1.96*se_ctrl), 
+#                   ymax = invlogit(ctrl+1.96*se_ctrl),
+#                   colour = "Control"),
+#                   fill = ctrl_color,              
+#                   alpha = 0.4) + 
+#   geom_line(aes(x = pegs, y = invlogit(ctrl)), colour = "black") + 
+#   xlab("Location (Peg #)") + 
+#   ylab("Probability of predation") + 
+#   theme(axis.text = element_text(size = 12),
+#         legend.position = c(0.8, 0.8)) + 
+#   guides(fill = guide_legend(title = NULL))
+#   scale_color_manual(name = "",                     
+#                      values = c("Control" = ctrl_color, 
+#                                 "Cage" = trmt_color)) + 
+#   scale_fill_manual(name = "",
+#                     breaks = c("Control" = ctrl_color, 
+#                                "Cage" = trmt_color),
+#                     values = c("Control" = ctrl_color, 
+#                                "Cage" = trmt_color))
+figCount <- incCount(figCount, "plotPrPredation")
+prPredationText <-"Predicted probability of predation as a function of location on the beach and cage and control treatments. Shaded areas correspond to approximate 95% confidence intervals"
+```
+
+The main effect of cage treatment was significant at $alpha$ = 0.10, indicating that the cages had significant effect in reducing the predation of loggerhead turtle nests (Table `r labelNumber(tableCount, "estimatesTable")`.
+
+\noindent `r pasteLabel(preText = "Table ", inObj = tableCount, objName = "estimatesTable", postText = tableText_estimatesTable)`
+`r kable(x = estim_df, digits = 2)`
+
+The predicted probability of predation over the beach is shown in Figure `r labelNumber(figCount, "plotPrPredation")`. Because of the small sample sizes in the area far from the field station, i.e., large peg numbers, confidence intervals are wide in the area. For the area with larger sample sizes, i.e., smaller peg numbers, predicted probability of predation was less for the treatment plots than for the control plots.  
+
+```{r plotPrPredation}
+print(p_cage_ctrl)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotPrPredation", postText = prPredationText)`
+
+#Spatial distribution of predation
+
+Using the logistic regression model (`r best.model`) from the previous analysis, we predicted the probability of predation at all observed nest locations, i.e., extrapolated to the entire beach.
+
+```{r echo=FALSE,cache=FALSE,include=FALSE}
+#FullBeachScanData_v06Aug2014b.csv contained a possible error on 
+# 290: QA37197,11/24/2014,209,210,NA,NA,L,NA,NA,NA,NA,NA,NA,NA,NA,LAID
+# The month has been modified to 1 from 11. the new file is c.csv 
+
+infile4 <- 'FullBeachScanData_v06Aug2014c.csv'
+data4_1 <- read.table(paste('data/',
+                            infile4, sep = ""), 
+                      header = TRUE, sep = ",",
+                      strip.white = TRUE,
+                      stringsAsFactors = FALSE,
+                      na.strings = "NA")
+data4_1$fSpecies <- as.factor(data4_1$Species)
+
+data4 <- na.omit(data4_1[, c("Date", "peg1", "Species", 
+                             "Activity", "Date", "fSpecies")])
+data4$Location <- data4$peg1
+#data4$fSpecies <- as.factor(data4$Species)
+
+tmp1 <- strsplit(as.character(data4$Date), split = "/") 
+tmp2 <- do.call("rbind", tmp1) # to char array
+data4$date <- as.numeric(tmp2[,1])
+data4$month <- as.numeric(tmp2[,2])
+data4$year <- as.numeric(tmp2[,3])
+
+data4$ACTIVITY <- as.factor(toupper(data4$Activity))
+data4$Treatment <- rep(0, times = dim(data4)[1])
+data4_Cc_0 <- data4[data4$fSpecies == "L",]
+data4_Cc <- data4_Cc_0[data4_Cc_0$ACTIVITY != "WALKING" & 
+                         data4_Cc_0$ACTIVITY != "PREDATED" & 
+                         data4_Cc_0$ACTIVITY != "EMERGENCE",]
+
+data4_Cc$DOY <- as.numeric(strftime(strptime(data4_Cc$Date, "%m/%d/%Y"), 
+                                    format = "%j"))
+                        
+firstDate <- min(data4_Cc$DOY[data4_Cc$year == 2013])
+data4_Cc$Days[data4_Cc$year == 2013] <- data4_Cc$DOY[data4_Cc$year == 2013] - 
+  firstDate + 1   # first laid date is 1
+data4_Cc$Days[data4_Cc$year == 2014] <- data4_Cc$DOY[data4_Cc$year == 2014] + 
+  (365 - firstDate + 1)
+
+data4_Cc$Location <- (data4_Cc$Location - meanPegs)/sdPegs
+data4_Cc$storm <- rep(0, times = dim(data4_Cc)[1])
+data4_Cc$storm[data4_Cc$DOY >= stormDate] <- 1
+
+pred.bestM <- predict(bestModel, newdata = data4_Cc, se.fit = TRUE)
+pred.bestM_prob <- invlogit(pred.bestM$fit)
+pred.bestM_UCL <- invlogit(pred.bestM$fit + 1.96*pred.bestM$se.fit)
+```
+
+```{r plotPredationProb}
+df2 <- data.frame(Location = data4_Cc$peg1, 
+                  DOY = data4_Cc$DOY,
+                  Days = data4_Cc$Days, 
+                  Probability = pred.bestM_prob,
+                  UCL = pred.bestM_UCL)
+
+p_predictedAtNests <- ggplot(data = df2) + 
+  geom_point(aes(x = Days, y = Location,
+                 size = Probability),
+             colour = "gray40") + 
+  ylab("Location (peg number)") + 
+  xlab("Days") +
+  scale_size_continuous(breaks = c(0.1, 0.15, 0.20, 0.25),
+                        limits = c(0.1, 0.3)) + 
+  #geom_point(aes(size = UCL), shape = 1) +
+    theme(axis.text = element_text(size = 12),
+        text = element_text(size = 12),
+        legend.background = element_rect(fill = "white", color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black")) 
+
+ggsave(filename = paste0("figures/p_PredictedAtNests_", Sys.Date(), ".tif"),
+         plot = p_predictedAtNests,
+         device = "tiff",
+         dpi = 600)
+
+figCount <- incCount(figCount, "plotPredictedAtNests")
+predictedAtNestsText <- "Predicted predation probabilities with respect to area of the beach and time since the beginning of the experiment. Size of points correspond to the probabilities."
+
+```
+
+```{r plotPredictedAtNests}
+if (save.fig)
+  ggsave(plot = p_predictedAtNests,
+         filename = "figures/p_PredictedAtNests.png",
+         device = "png",
+         dpi = 600)
+print(p_predictedAtNests)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotPredictedAtNests", postText = predictedAtNestsText)`
+
+
+#Spatial effects on predations
+
+```{r propPredated, message=FALSE,echo=F}
+# create a data frame
+data5 <- data4_1[is.na(data4_1$Predation_1) == F,]
+data5$nestSize <- data5$N_eggs_hatched + data5$N_eggs_predated +
+  data5$N_eggs_unhatched + data5$N_eggs_undeveloped
+data5$propPred <- (data5$N_eggs_predated)/(data5$nestSize)
+data5_Cc <- subset(data5, fSpecies == "L")
+df5 <- na.omit(data.frame(location = data5_Cc$peg1, 
+                          size = data5_Cc$nestSize,
+                          propPred = data5_Cc$propPred, 
+                          Date = data5_Cc$Date))
+
+```
+
+```{r plotPropPredEggs}
+
+plotPropPred <- ggplot(data = df5) + 
+  geom_point(aes(x = location, y = propPred), size = 3) + 
+  theme(axis.text = element_text(size = 12)) + 
+  xlab("Location") + 
+  ylab("Proportion of nest predated")
+
+# plot(xvals, y1, type = "l", col = "red")
+# lines(xvals, y2, col = "green")
+# lines(xvals, y3, col = "blue")
+# lines(xvals, y4, col = "yellow")
+figCount <- incCount(figCount, "plotPropPred")
+plotPropPredText <- "Observed predated proportions of eggs in each nest along the beach."
+```
+
+It appeared that a section of the beach, peg # from 50 to 100, had higher proportions of each nest were predated than the other areas (Figure `r labelNumber(figCount, 'plotPropPred')`)
+
+```{r plotPropPred}
+print(plotPropPred)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotPropPred", postText = plotPropPredText)`
+
+#Effects of timing of incubation on predation
+
+To determine how incubation timing affected the predation events, we used a conventional t-test and a Bayesian equivalent to see if the mean number of days at predation since laying is different between treatment (cage) and control.
+
+```{r incubationTimingT}
+data2 <- na.omit(data1[data1$Predated == 1, c("Device", "Day_of_predation", "Days")])
+# a quick t test... 
+fit2.1 <- t.test(Day_of_predation ~ Device, data = data2)
+#later predation on nests with device
+```
+
+```{r plotDayPredation}
+df3 <- data.frame(DayPredation = data2$Day_of_predation, 
+                  Device = data2$Device)
+plotDayPredation <- ggplot(data = df3, aes(x = Device, y = DayPredation)) + 
+  geom_boxplot() + geom_jitter() + 
+  scale_x_discrete(breaks = c("C", "D"),
+                   labels = c("Control", "Device")) + 
+  xlab("") + 
+  ylab("Day of Predation") + 
+  theme(axis.text = element_text(size = 12))
+
+figCount <- incCount(figCount, "plotDayPredation")
+plotDayPredationText <- "Differences in the day of predation between control and cage treatments. Horizontal lines indicate the medians and vertical lines indicate the ranges. Raw data points are shown in dots." 
+```
+
+```{r plotDayPred}
+print(plotDayPredation)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotDayPredation", postText = plotDayPredationText)`
+
+
+```{r incubationTimingBt, warning=FALSE, cache=TRUE, include=FALSE}
+# or do something more sophisticated
+parameters <- c("a0", "a", "sigma", "aSD", "contrast", "deviance")
+modelName <- "Model_ttest.txt"
+trt <- rep(1, times = dim(data2)[1])
+trt[data2$Device == "D"] <- 2
+stdY <- (data2$Day_of_predation - mean(data2$Day_of_predation))/(sd(data2$Day_of_predation))
+bugs.data <- list(y = stdY,
+                  x = trt,
+                  Ntotal = length(trt),
+                  NxLvl = 2)
+
+initsFunction <- function(){
+  a0 <- mean(stdY)
+  sigma <- runif(1, 0, 1)
+  a <- aggregate(stdY, list(trt), mean)[,2]
+  aSDunabs <- rt(1, 1)
+  
+  return(list(a0 = a0, sigma = sigma, 
+              a = a, aSDunabs = aSDunabs))  
+}
+
+jm <- jags.model(modelName, data = bugs.data,
+                 inits = initsFunction(), 
+                 n.chains = n.chains,
+                 n.adapt = n.adapt)
+
+update(jm, n.iter = n.iter)
+load.module("dic")
+zm <- coda.samples(jm, variable.names = parameters, 
+                   n.iter = n.iter)
+#g.diag <- gelman.diag(zm)
+#h.diag <- heidel.diag(zm)
+#r.diag <- raftery.diag(zm)
+sum_zm <- summary(zm)
+meanDev <- sum_zm$statistics[rownames(sum_zm$statistics) == "deviance", 
+                             colnames(sum_zm$statistics) == "Mean"]
+sdDev <- sum_zm$statistics[rownames(sum_zm$statistics) == "deviance", 
+                           colnames(sum_zm$statistics) == "SD"]
+DIC <- 0.5*(sdDev^2) + meanDev
+
+```
+
+A simple t-test indicated a non-significant result (p = `r round(fit2.1$p.value, 3)`). The Bayesian equivalent also resulted in non-significant result where the 95% posterior interval of the contrast (Ctrl vs. Cage effects) of the coefficients included zero (`r round(sum_zm$quantiles[rownames(sum_zm$quantiles) == "contrast", 1],3)`, `r round(sum_zm$quantiles[rownames(sum_zm$quantiles) == "contrast",5],3)`; Figure `r labelNumber(figCount, "plotDayPredation")`). 
+
+#Hatching success and hatchling production
+
+Hatching success of nests at the Wreck Rock beach was determined using the control treatments. The estimated median hatching success was used to estimate the total hatching production of the beach throughout the nesting period. 
+
+```{r hatchSuccess, echo=F, message=FALSE,cache=TRUE}
+infile4 <- 'predation_v13Aug2014a.csv'
+#infile4 <- "FullBeachScanData_v06Aug2014.csv"
+data4 <- read.csv(paste('data/',
+                        infile4, sep = ""), header = TRUE)
+#data4 <- data4a[data4a$Species == "L",]
+Ctrl <- data4[data4$Predation == 0,]
+#summary(Ctrl)
+Ctrl$hatchSuc <- (Ctrl$EMPTY_SHELLS)/(Ctrl$UNHATCHED_EGGS + 
+                                        Ctrl$UNDEVELOPED_EGGS +
+                                        Ctrl$EMPTY_SHELLS)
+
+mean.hatchSuc <- mean(Ctrl$hatchSuc, na.rm = TRUE)
+SE.hatchSuc <- sd(Ctrl$hatchSuc, na.rm = TRUE)/sqrt(sum(!is.na(Ctrl$hatchSuc)))
+median.hatchSuc <- median(Ctrl$hatchSuc, na.rm = TRUE)
+
+Ctrl$nestSize <- Ctrl$UNHATCHED_EGGS + 
+  Ctrl$UNDEVELOPED_EGGS + Ctrl$EMPTY_SHELLS
+mean.nestSize <- mean(Ctrl$nestSize, na.rm = TRUE)
+SE.nestSize <- sd(Ctrl$nestSize, na.rm = TRUE)/sqrt(sum(!is.na(Ctrl$nestSize)))
+median.nestSize <- median(Ctrl$nestSize, na.rm = TRUE)
+
+# To incorporate uncertainty in the total estiamted, we run bootstrap:
+# each nest gets predated with probability estimated by the logistic regression.
+hatchlings <- vector(mode = "numeric", length = 7000)
+
+for (k in 1:length(hatchlings)){
+  tmp1 <- vector(mode = "numeric", 
+                 length = length(pred.bestM_prob))
+  for (i in 1:length(pred.bestM_prob)){
+    tmp1[i] <- rbinom(n=1, size=1, 
+                      prob = 1 - pred.bestM_prob[i])
+  }
+  hatchlings[k] <- sum(tmp1) * median.nestSize * median.hatchSuc
+}
+
+mean.total.possible <- dim(data4_Cc)[1] * mean.nestSize * mean.hatchSuc
+mean.total.estimated <- sum(mean.nestSize * (1 - pred.bestM_prob)) * mean.hatchSuc
+
+median.total.possible <- dim(data4_Cc)[1] * median.nestSize * median.hatchSuc
+median.total.estimated <- sum(median.nestSize * (1 - pred.bestM_prob)) * median.hatchSuc
+
+qtiles <- round(as.vector(quantile(hatchlings, probs = c(0.025,0.5,0.975))), 0)
+
+```
+The mean nest size was `r round(mean.nestSize, 1)` (SE = `r round(SE.nestSize, 2)`), whereas the median was `r round(median.nestSize, 1)`. The mean hatching success was `r round(mean.hatchSuc, 3)` (SE = `r round(SE.hatchSuc, 3)`), whereas the median was `r round(median.hatchSuc, 3)`. 
+
+To estimate the total number of hatchlings from the entire beach, we used a parametric bootstrap procedure. For each observed nest, the probability of predation from the previous analysis was used to simulate whether or not the nest was predated. For the unpredated nests, median nest size and median hatching success rate were used to compute the total number of hatchlings. This process was repeated `r length(hatchlings)` times to obtain the uncertainty in the estimate from the predation probability. The following figure shows the distribution of the total number of hatchlings through the bootstrap analysis. The median of the distribution was `r as.integer(qtiles[2])` with a 95% interval `r as.integer(qtiles[1])` - `r as.integer(qtiles[3])`. 
+
+```{r plotHatchSuccess}
+df4 <- data.frame(hatchlings)
+
+plotHatchSuccess <- ggplot(data= df4,aes(x = hatchlings)) + 
+  geom_histogram(binwidth = 210) + 
+  xlab("Median # hatchlings") + 
+  ylab("Frequency") + 
+  theme(axis.text = element_text(size = 12))
+
+figCount <- incCount(figCount, "plotHatchSuccess")
+plotHatchSuccessText <- "The distribution of the median numbers of hatchlings produced from the entire beach. The distribution was obtained from a parametric bootstrap approach."
+
+```
+
+```{r createPlotHatchSuccess}
+print(plotHatchSuccess)
+```
+
+\noindent `r pasteLabel(preText = "Figure ", inObj = figCount, objName = "plotHatchSuccess", postText = plotHatchSuccessText)`
+

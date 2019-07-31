@@ -1,0 +1,11 @@
+
+model {
+  for (j in 1:nSeg){
+    for (i in 1:N[j]) {
+      y[j,i] ~ dbeta(a[j], b[j])
+    }
+    a[j] ~ dunif(0, 5)
+    b[j] ~ dunif(0, 5)
+  }
+  
+}
