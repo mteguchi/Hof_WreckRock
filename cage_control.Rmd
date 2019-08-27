@@ -586,10 +586,23 @@ df3 <- data.frame(DayPredation = data2$Day_of_predation,
 plotDayPredation <- ggplot(data = df3, aes(x = Device, y = DayPredation)) + 
   geom_boxplot() + geom_jitter() + 
   scale_x_discrete(breaks = c("C", "D"),
-                   labels = c("Control", "Device")) + 
+                   labels = c("Control", "Treatment")) + 
   xlab("") + 
   ylab("Day of Predation") + 
-  theme(axis.text = element_text(size = 12))
+  theme(axis.text = element_text(size = 12),
+        text = element_text(size = 12),
+        legend.background = element_rect(fill = "white", color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        axis.title = element_text(size = 12),
+        axis.title.y = element_text(vjust = 2.5))
+  
+if (save.fig) ggsave(plot = plotDayPredation,
+                     filename = paste0("figures/DayOfPredation_", Sys.Date(), ".tif"),
+                     device = "tiff",
+                     dpi = 600)
 
 figCount <- incCount(figCount, "plotDayPredation")
 plotDayPredationText <- "Differences in the day of predation between control and cage treatments. Horizontal lines indicate the medians and vertical lines indicate the ranges. Raw data points are shown in dots." 
@@ -605,7 +618,7 @@ print(plotDayPredation)
 ```{r incubationTimingBt, warning=FALSE, cache=TRUE, include=FALSE}
 # or do something more sophisticated
 parameters <- c("a0", "a", "sigma", "aSD", "contrast", "deviance")
-modelName <- "Model_ttest.txt"
+modelName <- "models/Model_ttest.txt"
 trt <- rep(1, times = dim(data2)[1])
 trt[data2$Device == "D"] <- 2
 stdY <- (data2$Day_of_predation - mean(data2$Day_of_predation))/(sd(data2$Day_of_predation))
@@ -705,9 +718,23 @@ df4 <- data.frame(hatchlings)
 
 plotHatchSuccess <- ggplot(data= df4,aes(x = hatchlings)) + 
   geom_histogram(binwidth = 210) + 
-  xlab("Median # hatchlings") + 
+  xlab("Median no. of hatchlings") + 
   ylab("Frequency") + 
-  theme(axis.text = element_text(size = 12))
+  theme(axis.text = element_text(size = 12),
+        text = element_text(size = 12),
+        legend.background = element_rect(fill = "white", color = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black"),
+        axis.title = element_text(size = 12),
+        axis.title.x = element_text(vjust = -1.5),
+        axis.title.y = element_text(vjust = 2.5)) 
+
+if (save.fig) ggsave(plotHatchSuccess, 
+                     filename = paste0("figures/Median_Hatchlings_", Sys.Date(), ".tif"),
+                     device = "tiff",
+                     dpi = 600)
 
 figCount <- incCount(figCount, "plotHatchSuccess")
 plotHatchSuccessText <- "The distribution of the median numbers of hatchlings produced from the entire beach. The distribution was obtained from a parametric bootstrap approach."
